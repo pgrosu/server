@@ -51,10 +51,10 @@ class TestAsserts(unittest.TestCase):
     def testAssertIsNone(self):
         self.testCase.assertIsNone(None)
         with self.testCase.assertRaises(AssertionError):
-            self.testCase.assertIsNone(0)
+            self.testCase.assertIsNone(1)
 
     def testAssertIsNotNone(self):
-        self.testCase.assertIsNotNone(0)
+        self.testCase.assertIsNotNone(1)
         with self.testCase.assertRaises(AssertionError):
             self.testCase.assertIsNotNone(None)
 
@@ -108,3 +108,16 @@ class TestAsserts(unittest.TestCase):
         def func(*args, **kwargs):
             raise AssertionError()
         self.testCase.assertRaises(AssertionError, func, 1, a=2)
+
+    def testAssertAlmostEqual(self):
+        self.testCase.assertAlmostEqual(0.12345678, 0.12345679)
+        with self.testCase.assertRaises(AssertionError):
+            self.testCase.assertAlmostEqual(0.123456, 0.1234568)
+        with self.testCase.assertRaises(AssertionError):
+            self.testCase.assertAlmostEqual(0.12345678, 0.12345679, 10)
+
+    def testAssertNotAlmostEqual(self):
+        self.testCase.assertNotAlmostEqual(0.123456, 0.1234568)
+        self.testCase.assertNotAlmostEqual(0.12345678, 0.12345679, 10)
+        with self.testCase.assertRaises(AssertionError):
+            self.testCase.assertNotAlmostEqual(0.12345678, 0.12345679)

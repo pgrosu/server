@@ -12,51 +12,55 @@ from __future__ import division
 from __future__ import print_function
 from __future__ import unicode_literals
 
-import tempfile
-import shlex
-import subprocess
+import server_test
+import client
 
-import ga4gh.protocol as protocol
-import server as server
+import ga4gh.server.datarepo as datarepo
 
 
-class TestGestalt(server.ServerTestConfigFile):
+class TestGestalt(server_test.ServerTest):
     """
     An end-to-end test of the client and server
     """
-    def setConfig(self):
-        self.config = """
-SIMULATED_BACKEND_NUM_VARIANT_SETS = 10
-SIMULATED_BACKEND_VARIANT_DENSITY = 1
-DATA_SOURCE = "__SIMULATED__"
-"""
-
-    def setUp(self):
-        self.client = None
-        self.clientOutFile = None
-        self.clientErrFile = None
-
     def testEndToEnd(self):
-        self.createLogFiles()
-        self.runRequest()
+        # extract ids from a simulated data repo with the same config
+        repo = datarepo.SimulatedDataRepository()
+        peer = repo.getPeers()[0]
+        dataset = repo.getDatasets()[0]
+        datasetId = dataset.getId()
+        variantSet = dataset.getVariantSets()[0]
+        variantSetId = variantSet.getId()
+        readGroupSet = dataset.getReadGroupSets()[0]
+        readGroupId = readGroupSet.getReadGroups()[0].getId()
+        referenceSet = repo.getReferenceSets()[0]
+        referenceSetId = referenceSet.getId()
+        referenceId = referenceSet.getReferences()[0].getId()
+        variantAnnotationSetId = \
+            variantSet.getVariantAnnotationSets()[0].getId()
+
+        self.simulatedPeerUrl = peer.getUrl()
+        self.simulatedDatasetId = datasetId
+        self.simulatedVariantSetId = variantSetId
+        self.simulatedReadGroupId = readGroupId
+        self.simulatedReferenceSetId = referenceSetId
+        self.simulatedReferenceId = referenceId
+        self.simulatedVariantAnnotationSetId = variantAnnotationSetId
+        self.client = client.ClientForTesting(self.server.getUrl())
+        self.runVariantsRequest()
         self.assertLogsWritten()
-        self.removeLogFiles()
-
-    def createLogFiles(self):
-        self.clientOutFile = tempfile.TemporaryFile()
-        self.clientErrFile = tempfile.TemporaryFile()
-
-    def removeLogFiles(self):
-        self.clientOutFile.close()
-        self.clientErrFile.close()
+        self.runPeersRequests()
+        self.runReadsRequest()
+        self.runReferencesRequest()
+        self.runVariantSetsRequestDatasetTwo()
+        self.runVariantAnnotationsRequest()
+        self.runGetVariantAnnotationSetsRequest()
+        self.client.cleanup()
 
     def assertLogsWritten(self):
-        self.clientOutFile.seek(0)
-        self.clientErrFile.seek(0)
-        serverOutLines = self.getServerOutLines()
-        serverErrLines = self.getServerErrLines()
-        clientOutLines = self.clientOutFile.readlines()
-        clientErrLines = self.clientErrFile.readlines()
+        serverOutLines = self.server.getOutLines()
+        serverErrLines = self.server.getErrLines()
+        clientOutLines = self.client.getOutLines()
+        clientErrLines = self.client.getErrLines()
 
         # nothing should be written to server stdout
         self.assertEqual(
@@ -78,9 +82,9 @@ DATA_SOURCE = "__SIMULATED__"
             [], clientOutLines,
             "Client stdout log is empty")
 
-        # num of client stdout should be twice the value of
-        # SIMULATED_BACKEND_NUM_VARIANT_SETS
-        self.assertEqual(len(clientOutLines), 20)
+        # number of variants to expect
+        expectedNumClientOutLines = 2
+        self.assertEqual(len(clientOutLines), expectedNumClientOutLines)
 
         # client stderr should log at least one post
         requestFound = False
@@ -92,10 +96,60 @@ DATA_SOURCE = "__SIMULATED__"
             requestFound,
             "No request logged from the client to stderr")
 
-    def runRequest(self):
-        clientCmdLine = """python client_dev.py -v -O variants-search
-            -s0 -e2 {}/v{}""".format(
-            self.serverUrl, protocol.version)
-        splits = shlex.split(clientCmdLine)
-        self.client = subprocess.check_call(
-            splits, stdout=self.clientOutFile, stderr=self.clientErrFile)
+    def runVariantsRequest(self):
+        self.runClientCmd(
+            self.client,
+            "variants-search",
+            "-s 0 -e 2 -V {}".format(self.simulatedVariantSetId))
+
+    def runVariantAnnotationsRequest(self):
+        self.runClientCmd(
+            self.client,
+            "variantannotations-search",
+            "--variantAnnotationSetId {} -s 0 -e 2".format(
+                self.simulatedVariantAnnotationSetId))
+
+    def runGetVariantAnnotationSetsRequest(self):
+        self.runClientCmd(
+            self.client,
+            "variantannotationsets-get",
+            "{}".format(self.simulatedVariantAnnotationSetId))
+
+    def runReadsRequest(self):
+        args = "--readGroupIds {} --referenceId {}".format(
+            self.simulatedReadGroupId, self.simulatedReferenceId)
+        self.runClientCmd(self.client, "reads-search", args)
+
+    def runReferencesRequest(self):
+        referenceSetId = self.simulatedReferenceSetId
+        referenceId = self.simulatedReferenceId
+        cmd = "referencesets-search"
+        self.runClientCmd(self.client, cmd)
+        cmd = "references-search"
+        args = "--referenceSetId={}".format(referenceSetId)
+        self.runClientCmd(self.client, cmd, args)
+        cmd = "referencesets-get"
+        args = "{}".format(referenceSetId)
+        self.runClientCmd(self.client, cmd, args)
+        cmd = "references-get"
+        args = "{}".format(referenceId)
+        self.runClientCmd(self.client, cmd, args)
+        cmd = "references-list-bases"
+        args = "{}".format(referenceId)
+        self.runClientCmd(self.client, cmd, args)
+
+    def runVariantSetsRequestDatasetTwo(self):
+        cmd = "variantsets-search"
+        args = "--datasetId {}".format(self.simulatedDatasetId)
+        self.runClientCmd(self.client, cmd, args)
+
+    def runPeersRequests(self):
+        cmd = "list-peers"
+        self.runClientCmd(self.client, cmd)
+
+        cmd = "get-info"
+        self.runClientCmd(self.client, cmd)
+
+        cmd = "announce"
+        args = "http://1kgenomes.ga4gh.org"
+        self.runClientCmd(self.client, cmd, args)

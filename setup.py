@@ -1,68 +1,75 @@
-import re
-import sys
-from ez_setup import use_setuptools
+# Don't import __future__ packages here; they make setup fail
 
-MIN_SETUPTOOLS_VERSION = "0.7"
-use_setuptools(version=MIN_SETUPTOOLS_VERSION)
-from setuptools import setup
+# First, we try to use setuptools. If it's not available locally,
+# we fall back on ez_setup.
+try:
+    from setuptools import setup
+except ImportError:
+    from ez_setup import use_setuptools
+    use_setuptools()
+    from setuptools import setup
 
+with open("README.pypi.rst") as readmeFile:
+    long_description = readmeFile.read()
 
-# Following the recommendations of PEP 396 we parse the version number
-# out of the module.
-def parseVersion(moduleFile):
-    """
-    Parses the version string from the specified file.
+install_requires = []
+with open("requirements.txt") as requirementsFile:
+    for line in requirementsFile:
+        line = line.strip()
+        if len(line) == 0:
+            continue
+        if line[0] == '#':
+            continue
+        if line.find('-c constraints.txt') == -1:
+            pinnedVersion = line.split()[0]
+            install_requires.append(pinnedVersion)
 
-    This implementation is ugly, but there doesn't seem to be a good way
-    to do this in general at the moment.
-    """
-    f = open(moduleFile)
-    s = f.read()
-    f.close()
-    match = re.findall("__version__ = '([^']+)'", s)
-    return match[0]
-
-f = open("README.txt")
-ga4ghReadme = f.read()
-f.close()
-ga4ghVersion = parseVersion("ga4gh/__init__.py")
-# Flask must come after all other requirements that have "flask" as a prefix
-# due to a setuptools bug.
-requirements = ["avro", "Flask-API", "flask-cors", "flask", "humanize",
-                "pysam>=0.8.2", "requests", "wormtable"]
+dependency_links = []
+try:
+    with open("constraints.txt") as constraintsFile:
+        for line in constraintsFile:
+            line = line.strip()
+            if len(line) == 0:
+                continue
+            if line[0] == '#':
+                continue
+            dependency_links.append(line)
+except EnvironmentError:
+    print('No constraints file found, proceeding without '
+          'creating dependency links.')
 
 setup(
-    name="ga4gh",
-    version=ga4ghVersion,
-    description="A reference implementation of the ga4gh API",
-    license='Apache License 2.0',
-    long_description=ga4ghReadme,
-    packages=["ga4gh", "ga4gh.datamodel", "ga4gh.templates"],
-    include_package_data=True,
+    name="ga4gh-server",
+    description="A reference implementation of the GA4GH API",
+    packages=["ga4gh", "ga4gh.server", "ga4gh.server.datamodel",
+              "ga4gh.server.templates"],
+    namespace_packages=["ga4gh"],
     zip_safe=False,
-    author="Global Alliance for Genomics and Health",
-    author_email="theglobalalliance@genomicsandhealth.org",
-    url="https://github.com/ga4gh/server",
+    url="https://github.com/ga4gh/ga4gh-server",
+    use_scm_version={"write_to": "ga4gh/server/_version.py"},
     entry_points={
         'console_scripts': [
-            'ga4gh_client=ga4gh.cli:client_main',
-            'ga4gh_server=ga4gh.cli:server_main',
-            'ga2vcf=ga4gh.cli:ga2vcf_main',
-            'ga2sam=ga4gh.cli:ga2sam_main',
+            'ga4gh_configtest=ga4gh.server.cli.configtest:configtest_main',
+            'ga4gh_server=ga4gh.server.cli.server:server_main',
+            'ga4gh_repo=ga4gh.server.cli.repomanager:repo_main',
         ]
     },
+    long_description=long_description,
+    install_requires=install_requires,
+    dependency_links=dependency_links,
+    license='Apache License 2.0',
+    include_package_data=True,
+    author="Global Alliance for Genomics and Health",
+    author_email="theglobalalliance@genomicsandhealth.org",
     classifiers=[
         'Development Status :: 3 - Alpha',
         'Intended Audience :: Science/Research',
         'License :: OSI Approved :: Apache Software License',
         'Natural Language :: English',
-
-        # We should add other versions that we can confirm pass the tests
-        # (2.6?)
         'Programming Language :: Python :: 2.7',
-
         'Topic :: Scientific/Engineering :: Bio-Informatics',
     ],
-    keywords='genomics reference',
-    install_requires=requirements,
+    keywords=['genomics', 'reference'],
+    # Use setuptools_scm to set the version number automatically from Git
+    setup_requires=['setuptools_scm'],
 )

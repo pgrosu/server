@@ -8,8 +8,14 @@ from __future__ import print_function
 from __future__ import unicode_literals
 
 import contextlib
+import fnmatch
 import os
 import inspect
+
+import google.protobuf.json_format as json_format
+
+import ga4gh.schemas.pb as pb
+import ga4gh.schemas.protocol as protocol
 
 
 def _wrapTestMethod(method):
@@ -26,22 +32,26 @@ def _wrapTestMethod(method):
         method()
     testFunction.description = "{}.{}.{}:{}".format(
         method.__module__, cls.__name__, method.__name__,
-        instance.getSetId())
+        instance.getLocalId())
     return testFunction
 
 
-def makeTests(testDataDir, testClass):
+def makeTests(testDataDir, testClass, fnmatchGlob="*"):
     """
     Top-level entry point for data driven tests. For every subdirectory
     in testDataDir, create an instance of testClass and then yield
     each of its testMethods in a format suitable for use with nose
     test generators.
     """
-    for testSetId in os.listdir(testDataDir):
-        tester = testClass(testSetId, testDataDir)
-        for name, _ in inspect.getmembers(testClass):
-            if name.startswith("test"):
-                yield _wrapTestMethod(getattr(tester, name))
+    for localId in os.listdir(testDataDir):
+        if (fnmatch.fnmatch(localId, fnmatchGlob) and
+                not fnmatch.fnmatch(localId, '*.json') and
+                not localId.startswith(".")):  # hidden files start with `.`
+            path = os.path.join(testDataDir, localId)
+            tester = testClass(localId, path)
+            for name, _ in inspect.getmembers(testClass):
+                if name.startswith("test"):
+                    yield _wrapTestMethod(getattr(tester, name))
 
 
 class TestCase(object):
@@ -49,13 +59,23 @@ class TestCase(object):
     Base class for datadriven test classes.
     Contains assert methods.
     """
+
+    # Protocol Buffers default values are considered "None-like"
+    consideredNone = [None, pb.DEFAULT_STRING, pb.DEFAULT_INT]
+
     def assertEqual(self, a, b):
         """
         Tests if a an b are equal. If not, output an error and raise
         an assertion error.
         """
-        if a != b:
-            raise AssertionError("{} != {}".format(a, b))
+        if a == b:
+            return
+
+        # Protocol Buffers has default string as "", not None
+        if a in TestCase.consideredNone and b in TestCase.consideredNone:
+            return
+
+        raise AssertionError("{} != {}".format(a, b))
 
     def assertNotEqual(self, a, b):
         """
@@ -97,14 +117,14 @@ class TestCase(object):
         """
         Tests that x is None.  If x is not, raise an assertion error.
         """
-        if x is not None:
+        if x not in TestCase.consideredNone:
             raise AssertionError("{} is not None".format(x))
 
     def assertIsNotNone(self, x):
         """
         Tests that x is not None.  If x is None, raise an assertion error.
         """
-        if x is None:
+        if x in TestCase.consideredNone:
             raise AssertionError("{} is None".format(x))
 
     def assertIn(self, a, b):
@@ -170,6 +190,9 @@ class TestCase(object):
                 "{} is not less than or equal to {}".format(a, b))
 
     def assertRaises(self, exceptionType, func=None, *args, **kwargs):
+        """
+        Tests that calling func raises an exception of type exceptionType
+        """
         if func is None:
             return self.assertRaisesWith(exceptionType)
         exceptionRaised = False
@@ -184,6 +207,9 @@ class TestCase(object):
 
     @contextlib.contextmanager
     def assertRaisesWith(self, exceptionType):
+        """
+        Tests that a block of code raises an exception of type exceptionType
+        """
         exceptionRaised = False
         try:
             yield
@@ -193,6 +219,24 @@ class TestCase(object):
             raise AssertionError(
                 "exception of type {} not raised".format(
                     exceptionType.__name__))
+
+    def assertAlmostEqual(self, a, b, ndigits=7):
+        """
+        Assert that a and b are equal within ndigits digits
+        """
+        if round(a-b, ndigits) != 0:
+            message = "{} and {} not equal within {} digits".format(
+                a, b, ndigits)
+            raise AssertionError(message)
+
+    def assertNotAlmostEqual(self, a, b, ndigits=7):
+        """
+        Assert that a and b are not equal within ndigits digits
+        """
+        if round(a-b, ndigits) == 0:
+            message = "{} and {} equal within {} digits".format(
+                a, b, ndigits)
+            raise AssertionError(message)
 
 
 class DataDrivenTest(TestCase):
@@ -204,19 +248,18 @@ class DataDrivenTest(TestCase):
     corresponding to this, and then test that these objects have the
     properties that we expect.
     """
-    def __init__(self, setId, baseDir):
-        self._setId = setId
-        self._dataDir = os.path.join(baseDir, setId)
-        self._gaObject = self.getDataModelClass()(
-            self._setId, self._dataDir)
+    def __init__(self, localId, dataPath):
+        self._localId = localId
+        self._dataPath = dataPath
+        self._gaObject = self.getDataModelInstance(localId, dataPath)
 
-    def getSetId(self):
+    def getLocalId(self):
         """
         Return the ID of this GA4GH datamodel object we are testing.
         """
-        return self._setId
+        return self._localId
 
-    def getDataModelClass(self):
+    def getDataModelInstance(self, localId, dataPath):
         """
         Returns the GA4GH datamodel class that this data driven test
         is exercising.
@@ -230,7 +273,17 @@ class DataDrivenTest(TestCase):
         """
         raise NotImplementedError()
 
+    def assertValid(self, protocolClass, jsonDict):
+        """
+        Asserts that the specified JSON dictionary is a valid instance
+        of the specified protocol class.
+        """
+        try:
+            json_format.Parse(jsonDict, protocolClass())
+        except json_format.ParseError, e:
+            assert False, e.message
+
     def testProtocolElementValid(self):
-        protocolElement = self._gaObject.toProtocolElement()
-        jsonDict = protocolElement.toJsonDict()
-        assert self.getProtocolClass().validate(jsonDict)
+        self.assertValid(
+            self.getProtocolClass(),
+            protocol.toJson(self._gaObject.toProtocolElement()))

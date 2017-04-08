@@ -5,245 +5,271 @@ from __future__ import division
 from __future__ import print_function
 from __future__ import unicode_literals
 
-import argparse
 import unittest
-import mock
+import shlex
 
-import ga4gh.cli as cli
-import ga4gh.protocol as protocol
-import ga4gh.client as client
+import ga4gh.server.cli.server as cli_server
+import ga4gh.server.cli.repomanager as cli_repomanager
+
+import ga4gh.schemas.protocol as protocol
 
 
-class TestNoInput(unittest.TestCase):
+class TestServerArguments(unittest.TestCase):
     """
-    Test the cli as if there was no input; print_help should be called.
-    The development server is a special case here, as it works without
-    arguments.
+    Tests that the server can parse expected arguments
     """
+    def testParseArguments(self):
+        cliInput = """--port 7777 --host 123.4.5.6 --config MockConfigName
+        --config-file /path/to/config --tls --dont-use-reloader"""
+        parser = cli_server.getServerParser()
+        args = parser.parse_args(cliInput.split())
+        self.assertEqual(args.port, 7777)
+        self.assertEqual(args.host, "123.4.5.6")
+        self.assertEqual(args.config, "MockConfigName")
+        self.assertEqual(args.config_file, "/path/to/config")
+        self.assertTrue(args.tls)
+        self.assertTrue(args.dont_use_reloader)
+
+
+class TestRepoManagerCli(unittest.TestCase):
+
     def setUp(self):
-        self.parser = StubArgumentParser(self)
+        self.parser = cli_repomanager.RepoManager.getParser()
+        self.registryPath = 'a/repo/path'
+        self.datasetName = "datasetName"
+        self.filePath = 'a/file/path'
+        self.dirPath = 'a/dir/path/'
+        self.individualName = "test"
+        self.biosampleName = "test"
+        self.individual = protocol.toJson(
+            protocol.Individual(
+                name="test",
+                created="2016-05-19T21:00:19Z",
+                updated="2016-05-19T21:00:19Z"))
+        self.biosample = protocol.toJson(
+            protocol.Biosample(
+                name="test",
+                created="2016-05-19T21:00:19Z",
+                updated="2016-05-19T21:00:19Z"))
 
-    def run(self, *args, **kwargs):
-        super(TestNoInput, self).run(*args, **kwargs)
-        self.verifyInput()
+    def testInit(self):
+        cliInput = "init {}".format(self.registryPath)
+        args = self.parser.parse_args(cliInput.split())
+        self.assertEquals(args.registryPath, self.registryPath)
+        self.assertEquals(args.runner, "init")
 
-    def verifyInput(self):
-        self.parser.assertParseArgsCountEquals(1)
-        self.parser.assertHelpCountEquals(1)
+    def testVerify(self):
+        cliInput = "verify {}".format(self.registryPath)
+        args = self.parser.parse_args(cliInput.split())
+        self.assertEquals(args.registryPath, self.registryPath)
+        self.assertEquals(args.runner, "verify")
 
-    def testGa2VcfNoInput(self):
-        cli.ga2vcf_main(self.parser)
+    def testList(self):
+        cliInput = "list {}".format(self.registryPath)
+        args = self.parser.parse_args(cliInput.split())
+        self.assertEquals(args.registryPath, self.registryPath)
+        self.assertEquals(args.runner, "list")
 
-    def testGa2SamNoInput(self):
-        cli.ga2sam_main(self.parser)
+    def testAddDataset(self):
+        cliInput = "add-dataset {} {}".format(
+            self.registryPath, self.datasetName)
+        args = self.parser.parse_args(cliInput.split())
+        self.assertEquals(args.registryPath, self.registryPath)
+        self.assertEquals(args.datasetName, self.datasetName)
+        self.assertEquals(args.runner, "addDataset")
 
-    def testCliNoInput(self):
-        cli.client_main(self.parser)
+    def testRemoveDataset(self):
+        cliInput = "remove-dataset {} {} -f".format(
+            self.registryPath, self.datasetName)
+        args = self.parser.parse_args(cliInput.split())
+        self.assertEquals(args.registryPath, self.registryPath)
+        self.assertEquals(args.datasetName, self.datasetName)
+        self.assertEquals(args.runner, "removeDataset")
+        self.assertEquals(args.force, True)
 
+    def testAddReferenceSet(self):
+        description = "description"
+        cliInput = (
+            "add-referenceset {} {} --description={} "
+            "--species NCBITAXONID-JSON "
+            "--isDerived True "
+            "--assemblyId ASSEMBLYID "
+            "--sourceAccessions SOURCEACCESSIONS "
+            "--sourceUri SOURCEURI ").format(
+            self.registryPath, self.filePath, description)
+        args = self.parser.parse_args(cliInput.split())
+        self.assertEquals(args.registryPath, self.registryPath)
+        self.assertEquals(args.filePath, self.filePath)
+        self.assertEquals(args.description, description)
+        self.assertEquals(args.species, "NCBITAXONID-JSON")
+        self.assertEquals(args.isDerived, True)
+        self.assertEquals(args.assemblyId, "ASSEMBLYID")
+        self.assertEquals(args.sourceAccessions, "SOURCEACCESSIONS")
+        self.assertEquals(args.sourceUri, "SOURCEURI")
+        self.assertEquals(args.runner, "addReferenceSet")
 
-class TestGa2VcfArguments(unittest.TestCase):
-    """
-    Tests the ga2vcf cli can parse all arguments it is supposed to
-    """
-    def testVariantsSearchArguments(self):
-        cliInput = """--workarounds WORK,AROUND
-        --key KEY -O --outputFile /dev/null
-        variants-search --referenceName REFERENCENAME
-        --variantName VARIANTNAME --callSetIds CALL,SET,IDS --start 0
-        --end 1 --pageSize 2 --variantSetIds VARIANT,SET,IDS
-        --datasetIds DATASET,IDS --maxCalls 5
-        BASEURL"""
-        stubConverterModule = StubConverterModuleVcf(self)
-        with mock.patch(
-                'ga4gh.converters.VcfConverter',
-                stubConverterModule):
-            parser = StubArgumentParserCli(self, cliInput)
-            cli.ga2vcf_main(parser)
-            parser.assertParseArgsCountEquals(1)
-            stubConverterModule.assertVcfConvertCountEquals(1)
+    def testRemoveReferenceSet(self):
+        referenceSetName = "referenceSetName"
+        cliInput = "remove-referenceset {} {} -f".format(
+            self.registryPath, referenceSetName)
+        args = self.parser.parse_args(cliInput.split())
+        self.assertEquals(args.registryPath, self.registryPath)
+        self.assertEquals(args.referenceSetName, referenceSetName)
+        self.assertEquals(args.runner, "removeReferenceSet")
+        self.assertEquals(args.force, True)
 
+    def testAddReadGroupSet(self):
+        cliInput = "add-readgroupset {} {} {} ".format(
+            self.registryPath, self.datasetName, self.filePath)
+        args = self.parser.parse_args(cliInput.split())
+        self.assertEquals(args.registryPath, self.registryPath)
+        self.assertEquals(args.datasetName, self.datasetName)
+        self.assertEquals(args.dataFile, self.filePath)
+        self.assertEquals(args.indexFile, None)
+        self.assertEquals(args.runner, "addReadGroupSet")
 
-class TestGa2SamArguments(unittest.TestCase):
-    """
-    Tests the ga2sam cli can parse all arguments it is supposed to
-    """
-    def testReadsSearchArguments(self):
-        cliInput = """--workarounds WORK,AROUND --key KEY -O
-        --pageSize 1 --start 2 --end 3 --outputFile OUT.SAM
-        --readGroupIds READ,GROUP,IDS --referenceId REFERENCEID
-        --referenceName REFERENCENAME --binaryOutput
-        BASEURL"""
-        stubConverterModule = StubConverterModuleSam(self)
-        with mock.patch(
-                'ga4gh.converters.SamConverter',
-                stubConverterModule):
-            parser = StubArgumentParserCli(self, cliInput)
-            cli.ga2sam_main(parser)
-            parser.assertParseArgsCountEquals(1)
-            stubConverterModule.assertSamConvertCountEquals(1)
+    def testAddReadGroupSetWithIndexFile(self):
+        indexPath = self.filePath + ".bai"
+        cliInput = "add-readgroupset {} {} {} -I {}".format(
+            self.registryPath, self.datasetName, self.filePath,
+            indexPath)
+        args = self.parser.parse_args(cliInput.split())
+        self.assertEquals(args.registryPath, self.registryPath)
+        self.assertEquals(args.datasetName, self.datasetName)
+        self.assertEquals(args.dataFile, self.filePath)
+        self.assertEquals(args.indexFile, indexPath)
+        self.assertEquals(args.runner, "addReadGroupSet")
 
+    def testRemoveReadGroupSet(self):
+        readGroupSetName = "readGroupSetName"
+        cliInput = "remove-readgroupset {} {} {} -f".format(
+            self.registryPath, self.datasetName, readGroupSetName)
+        args = self.parser.parse_args(cliInput.split())
+        self.assertEquals(args.registryPath, self.registryPath)
+        self.assertEquals(args.datasetName, self.datasetName)
+        self.assertEquals(args.readGroupSetName, readGroupSetName)
+        self.assertEquals(args.runner, "removeReadGroupSet")
+        self.assertEquals(args.force, True)
 
-class TestClientArguments(unittest.TestCase):
-    """
-    Tests the client cli can parse all arguments it is supposed to
-    and can initialize the runner in preparation for a request
-    """
-    def setUp(self):
-        # initialize the client parser
-        self.parser = StubArgumentParser(self)
-        cli.client_main(self.parser)
+    def testAddVariantSet(self):
+        cliInput = "add-variantset {} {} {} ".format(
+            self.registryPath, self.datasetName, self.filePath)
+        args = self.parser.parse_args(cliInput.split())
+        self.assertEquals(args.registryPath, self.registryPath)
+        self.assertEquals(args.datasetName, self.datasetName)
+        self.assertEquals(args.dataFiles, [self.filePath])
+        self.assertEquals(args.indexFiles, None)
+        self.assertEquals(args.runner, "addVariantSet")
 
-    def verifyInput(self):
-        # include arguments common to all commands
-        inputStr = "--verbose --workarounds WORK,AROUND --key KEY {0} URL"
-        cliInput = inputStr.format(self.cliInput)
-        splits = cliInput.split()
+    def testAddVariantSetWithIndexFiles(self):
+        file1 = "file1"
+        file2 = "file2"
+        indexFile1 = file1 + ".tbi"
+        indexFile2 = file2 + ".tbi"
+        cliInput = "add-variantset {} {} {} {} -I {} {}".format(
+            self.registryPath, self.datasetName, file1, file2,
+            indexFile1, indexFile2)
+        args = self.parser.parse_args(cliInput.split())
+        self.assertEquals(args.registryPath, self.registryPath)
+        self.assertEquals(args.datasetName, self.datasetName)
+        self.assertEquals(args.dataFiles, [file1, file2])
+        self.assertEquals(args.indexFiles, [indexFile1, indexFile2])
+        self.assertEquals(args.runner, "addVariantSet")
 
-        # parse the arguments
-        args = self.parser.parser.parse_args(splits)
+    def testRemoveVariantSet(self):
+        variantSetName = "variantSetName"
+        cliInput = "remove-variantset {} {} {}".format(
+            self.registryPath, self.datasetName, variantSetName)
+        args = self.parser.parse_args(cliInput.split())
+        self.assertEquals(args.registryPath, self.registryPath)
+        self.assertEquals(args.datasetName, self.datasetName)
+        self.assertEquals(args.variantSetName, variantSetName)
+        self.assertEquals(args.runner, "removeVariantSet")
+        self.assertEquals(args.force, False)
 
-        # invoke the initializer of the runner (which also parses args)
-        runner = args.runner(args)
+    def testAddOntology(self):
+        cliInput = "add-ontology {} {}".format(
+            self.registryPath, self.filePath)
+        args = self.parser.parse_args(cliInput.split())
+        self.assertEquals(args.registryPath, self.registryPath)
+        self.assertEquals(args.filePath, self.filePath)
+        self.assertEquals(args.runner, "addOntology")
 
-        # ensure the correct attributes on the runner are set
-        if hasattr(runner, '_request'):
-            self.assertIsInstance(runner._request, protocol.ProtocolElement)
-        self.assertIsInstance(runner._httpClient, client.HttpClient)
+    def testRemoveOntology(self):
+        ontologyName = "the_ontology_name"
+        cliInput = "remove-ontology {} {}".format(
+            self.registryPath, ontologyName)
+        args = self.parser.parse_args(cliInput.split())
+        self.assertEquals(args.registryPath, self.registryPath)
+        self.assertEquals(args.ontologyName, ontologyName)
+        self.assertEquals(args.runner, "removeOntology")
+        self.assertEquals(args.force, False)
 
-    def run(self, *args, **kwargs):
-        super(TestClientArguments, self).run(*args, **kwargs)
-        self.verifyInput()
+    def testAddBiosample(self):
+        cliInput = "add-biosample {} {} {} '{}'".format(
+            self.registryPath,
+            self.datasetName,
+            self.biosampleName,
+            self.biosample)
+        args = self.parser.parse_args(shlex.split(cliInput))
+        self.assertEquals(args.registryPath, self.registryPath)
+        self.assertEquals(args.datasetName, self.datasetName)
+        self.assertEquals(args.biosampleName, self.biosampleName)
+        self.assertEquals(args.biosample, self.biosample)
+        self.assertEquals(args.runner, "addBiosample")
 
-    def testVariantsSearchArguments(self):
-        self.cliInput = """variants-search --referenceName REFERENCENAME
-        --variantName VARIANTNAME --callSetIds CALL,SET,IDS --start 0
-        --end 1 --pageSize 2 --variantSetIds VARIANT,SET,IDS"""
+    def testRemoveBiosample(self):
+        cliInput = "remove-biosample {} {} {}".format(
+            self.registryPath,
+            self.datasetName,
+            self.biosampleName)
+        args = self.parser.parse_args(cliInput.split())
+        self.assertEquals(args.registryPath, self.registryPath)
+        self.assertEquals(args.datasetName, self.datasetName)
+        self.assertEquals(args.biosampleName, self.biosampleName)
+        self.assertEquals(args.runner, "removeBiosample")
+        self.assertEquals(args.force, False)
 
-    def testVariantSetsSearchArguments(self):
-        self.cliInput = """variantsets-search --pageSize 1 --datasetIds
-        DATA,SET,IDS"""
+    def testAddIndividual(self):
+        cliInput = "add-individual {} {} {} '{}'".format(
+            self.registryPath,
+            self.datasetName,
+            self.individualName,
+            self.individual)
+        args = self.parser.parse_args(shlex.split(cliInput))
+        self.assertEquals(args.registryPath, self.registryPath)
+        self.assertEquals(args.datasetName, self.datasetName)
+        self.assertEquals(args.individualName, self.individualName)
+        self.assertEquals(args.individual, self.individual)
+        self.assertEquals(args.runner, "addIndividual")
 
-    def testReferenceSetsSearchArguments(self):
-        self.cliInput = """referencesets-search --pageSize 1 --accessions
-        ACC,ESS,IONS --md5checksums MD5,CHECKSUMS --assemblyId ASSEMBLYID"""
+    def testRemoveIndividual(self):
+        cliInput = "remove-individual {} {} {}".format(
+            self.registryPath,
+            self.datasetName,
+            self.individualName)
+        args = self.parser.parse_args(cliInput.split())
+        self.assertEquals(args.registryPath, self.registryPath)
+        self.assertEquals(args.datasetName, self.datasetName)
+        self.assertEquals(args.individualName, self.individualName)
+        self.assertEquals(args.runner, "removeIndividual")
+        self.assertEquals(args.force, False)
 
-    def testReferencesSearchArguments(self):
-        self.cliInput = """references-search --pageSize 1 --accessions
-        ACC,ESS,IONS --md5checksums MD5,CHECKSUMS"""
+    def testAddPhenotypeAssociationSet(self):
+        cliInput = "add-phenotypeassociationset {} {} {} -n NAME".format(
+            self.registryPath,
+            self.datasetName,
+            self.dirPath)
+        args = self.parser.parse_args(cliInput.split())
+        self.assertEquals(args.registryPath, self.registryPath)
+        self.assertEquals(args.datasetName, self.datasetName)
+        self.assertEquals(args.dirPath, self.dirPath)
+        self.assertEquals(args.name, "NAME")
 
-    def testReadGroupSetsSearchArguments(self):
-        self.cliInput = """readgroupsets-search --pageSize 1 --datasetIds
-        DATA,SET,IDS --name NAME"""
-
-    def testCallSetsSearchArguments(self):
-        self.cliInput = """callsets-search --pageSize 1 --name NAME
-        --variantSetIds VARIANT,SET,IDS"""
-
-    def testReadsSearchArguments(self):
-        self.cliInput = """reads-search --pageSize 1 --start 2 --end 3
-        --readGroupIds READ,GROUP,IDS --referenceId REFERENCEID
-        --referenceName REFERENCENAME"""
-
-    def testReferenceSetGetArguments(self):
-        self.cliInput = """referencesets-get --id ID"""
-
-    def testReferenceGetArguments(self):
-        self.cliInput = """references-get --id ID"""
-
-    def testReferenceBasesListArguments(self):
-        self.cliInput = """references-list-bases --id ID
-        --start 1 --end 2"""
-
-
-class StubArgumentParser(object):
-    """
-    A stand-in object for an ArgumentParser that intercepts calls
-    to parse_args and print_help, but otherwise provides normal
-    behavior via passing through calls to an attribute ArgumentParser
-    """
-    def __init__(self, currentTest):
-        self.parser = argparse.ArgumentParser(description="Stub")
-        self.helpCount = 0
-        self.parseArgsCount = 0
-        self.parse_args = self._parseArgs
-        self.print_help = self._help
-        self.currentTest = currentTest
-
-    def _help(self):
-        self.helpCount += 1
-
-    def _parseArgs(self):
-        self.parseArgsCount += 1
-        return ()
-
-    def assertParseArgsCountEquals(self, parseArgsCount):
-        self.currentTest.assertEquals(self.parseArgsCount, parseArgsCount)
-
-    def assertHelpCountEquals(self, helpCount):
-        self.currentTest.assertEquals(self.helpCount, helpCount)
-
-    def __getattr__(self, name):
-        return getattr(self.parser, name)
-
-
-class StubArgumentParserCli(StubArgumentParser):
-    """
-    Like StubArgumentParser, but returns real arguments from the
-    parse_args call (that the user provides)
-    """
-    def __init__(self, currentTest, cliInput):
-        super(StubArgumentParserCli, self).__init__(currentTest)
-        self.cliInput = cliInput
-
-    def _parseArgs(self):
-        self.parseArgsCount += 1
-        splits = self.cliInput.split()
-        return self.parser.parse_args(splits)
-
-
-class StubConverterModule(object):
-    """
-    A stand-in object for the converter module.
-    Just provides access to dummy objects.
-    """
-    def __init__(self, currentTest):
-        self.currentTest = currentTest
-        self.VcfConverter = StubConverter(self.currentTest)
-        self.SamConverter = StubConverter(self.currentTest)
-
-    def assertVcfConvertCountEquals(self, convertCount):
-        self.VcfConverter.assertConvertCountEquals(convertCount)
-
-    def assertSamConvertCountEquals(self, convertCount):
-        self.SamConverter.assertConvertCountEquals(convertCount)
-
-
-class StubConverterModuleSam(StubConverterModule):
-    """
-    The StubConverterModule for Sam tests
-    """
-    def __call__(self, *args):
-        return self.SamConverter
-
-
-class StubConverterModuleVcf(StubConverterModule):
-    """
-    The StubConverterModule for Vcf tests
-    """
-    def __call__(self, *args):
-        return self.VcfConverter
-
-
-class StubConverter(object):
-    """
-    A stand-in object for a converter that does nothing
-    """
-    def __init__(self, currentTest):
-        self.currentTest = currentTest
-        self.convertCount = 0
-
-    def convert(self):
-        self.convertCount += 1
-
-    def assertConvertCountEquals(self, convertCount):
-        self.currentTest.assertEquals(self.convertCount, convertCount)
+    def testRemovePhenotypeAssociationSet(self):
+        cliInput = "remove-phenotypeassociationset {} {} NAME".format(
+            self.registryPath, self.datasetName)
+        args = self.parser.parse_args(cliInput.split())
+        self.assertEquals(args.registryPath, self.registryPath)
+        self.assertEquals(args.datasetName, self.datasetName)
+        self.assertEquals(args.name, "NAME")

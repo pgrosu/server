@@ -1,7 +1,6 @@
 """
 Tests for the client
 """
-
 from __future__ import division
 from __future__ import print_function
 from __future__ import unicode_literals
@@ -9,221 +8,338 @@ from __future__ import unicode_literals
 import unittest
 import json
 
-import mock
+import ga4gh.server.backend as backend
+import ga4gh.server.datarepo as datarepo
 
-import ga4gh.protocol as protocol
-import tests.utils as utils
+import ga4gh.client.client as client
+import ga4gh.common.utils as utils
+import ga4gh.schemas.protocol as protocol
 
 
-class DummyRequest(protocol.ProtocolElement):
+class DatamodelObjectWrapper(object):
+    """
+    Thin wrapper class that allows us to treat data model objects uniformly.
+    We should update the data model interface so that objects are always
+    returned so that we always call toProtocolElement on the results.
+    Variants and Reads are the exceptions here.
+    """
+    def __init__(self, gaObject):
+        self.gaObject = gaObject
 
-    __slots__ = ["stringVal", "intVal", "arrayVal", "pageToken"]
-
-    def __init__(self):
-        self.stringVal = "stringVal"
-        self.intVal = 1
-        self.arrayVal = [1, 2, 3]
-        self.pageToken = None
-
-    def __eq__(self, other):
-        for field in self.__slots__:
-            if getattr(self, field) != getattr(other, field):
-                return False
-        return True
-
-    def __ne__(self, other):
-        return not self.__eq__(other)
+    def toProtocolElement(self):
+        return self.gaObject
 
 
 class DummyResponse(object):
-
-    def __init__(self, text=None):
+    """
+    Stand in for requests Response object;
+    """
+    def __init__(self, text):
+        self.text = text
         self.status_code = 200
-        if text is None:
-            self.text = self._getText()
-        else:
-            self.text = text
 
-    def _getText(self):
-        txt = {
-            "nextPageToken": "xyz",
-            "referenceSets": [
-                {"id": "refA", "md5checksum": "abc"},
-                {"id": "refB"}
-            ]
+
+class DummyRequestsSession(object):
+    """
+    Takes the place of a requests session so that we can check that all
+    values are sent and received correctly.
+    """
+    def __init__(self, backend, urlPrefix):
+        self._backend = backend
+        self._urlPrefix = urlPrefix
+        self._getMethodMap = {
+            "datasets": self._backend.runGetDataset,
+            "referencesets": self._backend.runGetReferenceSet,
+            "references": self._backend.runGetReference,
+            "variantsets": self._backend.runGetVariantSet,
+            "variants": self._backend.runGetVariant,
+            "readgroupsets": self._backend.runGetReadGroupSet,
+            "readgroups": self._backend.runGetReadGroup,
+            "rnaquantifications": self._backend.runGetRnaQuantification,
+            "rnaquantificationsets": self._backend.runGetRnaQuantificationSet,
+            "expressionlevels": self._backend.runGetExpressionLevel,
         }
-        return json.dumps(txt)
+        self._searchMethodMap = {
+            "datasets": self._backend.runSearchDatasets,
+            "referencesets": self._backend.runSearchReferenceSets,
+            "references": self._backend.runSearchReferences,
+            "variantsets": self._backend.runSearchVariantSets,
+            "variants": self._backend.runSearchVariants,
+            "readgroupsets": self._backend.runSearchReadGroupSets,
+            "reads": self._backend.runSearchReads,
+            "rnaquantifications": self._backend.runSearchRnaQuantifications,
+            "rnaquantificationsets":
+                self._backend.runSearchRnaQuantificationSets,
+            "expressionlevels": self._backend.runSearchExpressionLevels,
+        }
+        self.headers = {}
 
-    def raise_for_status(self):
-        pass
+    def checkSessionParameters(self):
+        contentType = "Content-type"
+        assert contentType in self.headers
+        assert self.headers[contentType] == "application/json"
+
+    def get(self, url, params):
+        # TODO add some more checks for params to see if Key is set,
+        # and we're not sending any extra stuff.
+        self.checkSessionParameters()
+        assert url.startswith(self._urlPrefix)
+        suffix = url[len(self._urlPrefix):]
+        splits = suffix.split("/")
+        assert len(splits) == 3
+        assert splits[0] == ''
+        datatype, id_ = splits[1:]
+        assert datatype in self._getMethodMap
+        method = self._getMethodMap[datatype]
+        result = method(id_)
+        return DummyResponse(result)
+
+    def post(self, url, params=None, data=None):
+        self.checkSessionParameters()
+        assert url.startswith(self._urlPrefix)
+        suffix = url[len(self._urlPrefix):]
+        searchSuffix = "/search"
+        if suffix.endswith(searchSuffix):
+            datatype = suffix[1:-len(searchSuffix)]
+            assert datatype in self._searchMethodMap
+            method = self._searchMethodMap[datatype]
+            result = method(data)
+        else:
+            # ListReferenceBases is an oddball and needs to be treated
+            # separately.
+            data = json.loads(data)
+            args = protocol.ListReferenceBasesRequest()
+            args.reference_id = data.get('referenceId', "")
+            args.start = int(data.get('start', 0))
+            args.end = int(data.get('end', 0))
+            args.page_token = data.get('pageToken', "")
+            result = self._backend.runListReferenceBases(
+                protocol.toJson(args))
+        return DummyResponse(result)
 
 
-class TestSearchMethodsCallRunRequest(unittest.TestCase):
+class DummyHttpClient(client.HttpClient):
     """
-    Test that search methods call lower-level functionality correctly
+    Client in which we intercept calls to the underlying requests connection.
     """
+    def __init__(self, backend):
+        self._urlPrefix = "http://example.com"
+        super(DummyHttpClient, self).__init__(self._urlPrefix)
+        self._session = DummyRequestsSession(backend, self._urlPrefix)
+        self._setup_http_session()
+
+
+class ExhaustiveListingsMixin(object):
+    """
+    Tests exhaustive listings using the high-level API with a Simulated
+    backend.
+    """
+    @classmethod
+    def setUpClass(cls):
+        cls.backend = backend.Backend(datarepo.SimulatedDataRepository(
+            randomSeed=100, numDatasets=3,
+            numVariantSets=3, numCalls=3, variantDensity=0.5,
+            numReferenceSets=3, numReferencesPerReferenceSet=3,
+            numReadGroupSets=3, numReadGroupsPerReadGroupSet=3,
+            numAlignments=3, numRnaQuantSets=3))
+        cls.dataRepo = cls.backend.getDataRepository()
+
     def setUp(self):
-        self.httpClient = utils.makeHttpClient()
-        self.protocolRequest = DummyRequest()
-        self.httpClient.runSearchRequest = mock.Mock()
-        self.httpClient.runListRequest = mock.Mock()
-        self.httpClient.runGetRequest = mock.Mock()
-        self._id = "SomeId"
+        self.client = self.getClient()
 
-    def testSearchVariants(self):
-        self.httpClient.searchVariants(self.protocolRequest)
-        self.httpClient.runSearchRequest.assert_called_once_with(
-            self.protocolRequest, "variants",
-            protocol.GASearchVariantsResponse, "variants")
+    def verifyObjectList(self, gaObjects, datamodelObjects, getMethod):
+        """
+        Verifies that the specified list of protocol objects corresponds
+        to the specified list of datamodel objects.
+        """
+        for gaObject, datamodelObject in utils.zipLists(
+                gaObjects, datamodelObjects):
+            self.assertEqual(gaObject, datamodelObject.toProtocolElement())
+            otherGaObject = getMethod(gaObject.id)
+            self.assertEqual(gaObject, otherGaObject)
 
-    def testSearchVariantSets(self):
-        self.httpClient.searchVariantSets(self.protocolRequest)
-        self.httpClient.runSearchRequest.assert_called_once_with(
-            self.protocolRequest, "variantsets",
-            protocol.GASearchVariantSetsResponse, "variantSets")
+    def testAllDatasets(self):
+        datasets = list(self.client.search_datasets())
+        self.verifyObjectList(
+            datasets, self.dataRepo.getDatasets(), self.client.get_dataset)
 
-    def testSearchReferenceSets(self):
-        self.httpClient.searchReferenceSets(self.protocolRequest)
-        self.httpClient.runSearchRequest.assert_called_once_with(
-            self.protocolRequest, "referencesets",
-            protocol.GASearchReferenceSetsResponse, "referenceSets")
+    def testAllReferenceSets(self):
+        referenceSets = list(self.client.search_reference_sets())
+        self.verifyObjectList(
+            referenceSets, self.dataRepo.getReferenceSets(),
+            self.client.get_reference_set)
 
-    def testSearchReferences(self):
-        self.httpClient.searchReferences(self.protocolRequest)
-        self.httpClient.runSearchRequest.assert_called_once_with(
-            self.protocolRequest, "references",
-            protocol.GASearchReferencesResponse, "references")
+    def testAllReferences(self):
+        for referenceSet in self.client.search_reference_sets():
+            references = list(self.client.search_references(referenceSet.id))
+            datamodelReferences = self.dataRepo.getReferenceSet(
+                referenceSet.id).getReferences()
+            self.verifyObjectList(
+                references, datamodelReferences, self.client.get_reference)
+            for datamodelReference in datamodelReferences:
+                bases = self.client.list_reference_bases(
+                    datamodelReference.getId())
+                otherBases = datamodelReference.getBases(
+                    0, datamodelReference.getLength())
+                self.assertEqual(bases, otherBases)
 
-    def testSearchReadGroupSets(self):
-        self.httpClient.searchReadGroupSets(self.protocolRequest)
-        self.httpClient.runSearchRequest.assert_called_once_with(
-            self.protocolRequest, "readgroupsets",
-            protocol.GASearchReadGroupSetsResponse, "readGroupSets")
+    def testAllVariantSets(self):
+        for dataset in self.client.search_datasets():
+            variantSets = list(self.client.search_variant_sets(dataset.id))
+            datamodelVariantSets = self.dataRepo.getDataset(
+                dataset.id).getVariantSets()
+            self.verifyObjectList(
+                variantSets, datamodelVariantSets, self.client.get_variant_set)
 
-    def testSearchCallSets(self):
-        self.httpClient.searchCallSets(self.protocolRequest)
-        self.httpClient.runSearchRequest.assert_called_once_with(
-            self.protocolRequest, "callsets",
-            protocol.GASearchCallSetsResponse, "callSets")
+    def testAllVariants(self):
+        for datamodelDataset in self.dataRepo.getDatasets():
+            for datamodelVariantSet in datamodelDataset.getVariantSets():
+                # TODO the values should be derived from the datamodel
+                # variant set object.
+                start = 0
+                end = 20
+                referenceName = "fixme"
+                variants = list(self.client.search_variants(
+                    datamodelVariantSet.getId(), start=start, end=end,
+                    reference_name=referenceName))
+                datamodelVariants = [
+                    DatamodelObjectWrapper(variant) for variant in
+                    datamodelVariantSet.getVariants(
+                        referenceName, start, end)]
+                self.verifyObjectList(
+                    variants, datamodelVariants, self.client.get_variant)
 
-    def testSearchReads(self):
-        self.httpClient.searchReads(self.protocolRequest)
-        self.httpClient.runSearchRequest.assert_called_once_with(
-            self.protocolRequest, "reads",
-            protocol.GASearchReadsResponse, "alignments")
+    def testAllReadGroupSets(self):
+        for dataset in self.client.search_datasets():
+            readGroupSets = list(
+                self.client.search_read_group_sets(dataset.id))
+            datamodelReadGroupSets = self.dataRepo.getDataset(
+                dataset.id).getReadGroupSets()
+            self.verifyObjectList(
+                readGroupSets, datamodelReadGroupSets,
+                self.client.get_read_group_set)
+            # Check the readGroups.
+            for readGroupSet, datamodelReadGroupSet in zip(
+                    readGroupSets, datamodelReadGroupSets):
+                datamodelReadGroups = datamodelReadGroupSet.getReadGroups()
+                self.verifyObjectList(
+                    readGroupSet.read_groups, datamodelReadGroups,
+                    self.client.get_read_group)
 
-    def testGetReferenceSet(self):
-        self.httpClient.getReferenceSet(self._id)
-        self.httpClient.runGetRequest.assert_called_once_with(
-            "referencesets", protocol.GAReferenceSet, self._id)
+    def testAllReads(self):
+        for dmDataset in self.dataRepo.getDatasets():
+            for dmReadGroupSet in dmDataset.getReadGroupSets():
+                dmReferenceSet = dmReadGroupSet.getReferenceSet()
+                for dmReadGroup in dmReadGroupSet.getReadGroups():
+                    for dmReference in dmReferenceSet.getReferences():
+                        # TODO fix these coordinates.
+                        start = 0
+                        end = 10
+                        dmReads = list(dmReadGroup.getReadAlignments(
+                            dmReference, start, end))
+                        reads = list(self.client.search_reads(
+                            [dmReadGroup.getId()], dmReference.getId(),
+                            start, end))
+                        self.assertGreater(len(reads), 0)
+                        for dmRead, read in utils.zipLists(dmReads, reads):
+                            self.assertEqual(dmRead, read)
 
-    def testGetReference(self):
-        self.httpClient.getReference(self._id)
-        self.httpClient.runGetRequest.assert_called_once_with(
-            "references", protocol.GAReference, self._id)
+    def testAllRnaQuantificationSets(self):
+        for dataset in self.client.search_datasets():
+            rnaQuantificationSets = \
+                list(self.client.search_rna_quantification_sets(dataset.id))
+            datamodelRnaQuantificationSets = self.dataRepo.getDataset(
+                dataset.id).getRnaQuantificationSets()
+            self.verifyObjectList(
+                rnaQuantificationSets, datamodelRnaQuantificationSets,
+                self.client.get_rna_quantification_set)
 
-    def testListReferenceBases(self):
-        self.httpClient.listReferenceBases(self.protocolRequest, self._id)
-        self.httpClient.runListRequest.assert_called_once_with(
-            self.protocolRequest, "references/{id}/bases",
-            protocol.GAListReferenceBasesResponse, self._id)
 
-
-class TestRunRequest(unittest.TestCase):
+class TestExhaustiveListingsHttp(ExhaustiveListingsMixin, unittest.TestCase):
     """
-    Test the logic of the run*Request methods
+    Tests the exhaustive listings using the HTTP client.
     """
+
+    def getClient(self):
+        return DummyHttpClient(self.backend)
+
+
+class TestExhaustiveListingsLocal(ExhaustiveListingsMixin, unittest.TestCase):
+    """
+    Tests the exhaustive listings using the local client.
+    """
+
+    def getClient(self):
+        return client.LocalClient(self.backend)
+
+
+class PagingMixin(object):
+    """
+    Tests the paging code using a simulated backend.
+    """
+    @classmethod
+    def setUpClass(cls):
+        cls.numReferences = 25
+        cls.backend = backend.Backend(datarepo.SimulatedDataRepository(
+            randomSeed=100, numDatasets=0,
+            numReferenceSets=1,
+            numReferencesPerReferenceSet=cls.numReferences))
+        cls.dataRepo = cls.backend.getDataRepository()
+
     def setUp(self):
-        self.httpClient = utils.makeHttpClient()
+        self.client = self.getClient()
+        self.datamodelReferenceSet = self.dataRepo.getReferenceSetByIndex(0)
+        self.datamodelReferences = self.datamodelReferenceSet.getReferences()
+        self.references = [
+            dmReference.toProtocolElement()
+            for dmReference in self.datamodelReferences]
+        self.assertEqual(len(self.references), self.numReferences)
 
-    def testRunSearchRequest(self):
-        # setup
-        mockPost = mock.Mock()
-        with mock.patch('requests.request', mockPost):
-            mockPost.side_effect = [DummyResponse(), DummyResponse('{}')]
-            protocolRequest = DummyRequest()
-            objectName = "referencesets"
-            protocolResponseClass = protocol.GASearchReferenceSetsResponse
-            listAttr = "referenceSets"
+    def verifyAllReferences(self):
+        """
+        Verifies that we correctly return all references.
+        """
+        references = list(self.client.search_references(
+            self.datamodelReferenceSet.getId()))
+        self.assertEqual(references, self.references)
 
-            # invoke SUT
-            result = [refSet for refSet in self.httpClient.runSearchRequest(
-                protocolRequest, objectName,
-                protocolResponseClass, listAttr)]
+    def testDefaultPageSize(self):
+        self.verifyAllReferences()
 
-            # verify results of invocation
-            self.assertEqual(len(result), 2)
-            self.assertEqual(result[0].id, "refA")
-            self.assertEqual(result[0].md5checksum, "abc")
-            self.assertEqual(result[1].id, "refB")
+    def verifyPageSize(self, pageSize):
+        self.client.set_page_size(pageSize)
+        self.assertEqual(pageSize, self.client.get_page_size())
+        self.verifyAllReferences()
 
-            # verify requests.post called correctly
-            url = "http://example.com/referencesets/search"
-            jsonString = protocolRequest.toJsonString()
-            headers = {"Content-type": "application/json"}
-            httpMethod = 'POST'
-            mockPost.assert_called_twice_with(
-                httpMethod, url, jsonString, headers=headers, verify=False)
+    def testPageSize1(self):
+        self.verifyPageSize(1)
 
-    def testRunGetRequest(self):
-        # setup
-        mockGet = mock.Mock()
-        with mock.patch('requests.request', mockGet):
-            text = {
-                "id": "gaid",
-                "md5checksum": "def",
-            }
-            mockGet.side_effect = [DummyResponse(json.dumps(text))]
-            objectName = "reference"
-            protocolResponseClass = protocol.GAReference
-            id_ = 'anId'
+    def testPageSize2(self):
+        self.verifyPageSize(2)
 
-            # invoke SUT
-            result = self.httpClient.runGetRequest(
-                objectName, protocolResponseClass, id_)
+    def testPageSize3(self):
+        self.verifyPageSize(3)
 
-            # verify results of invocation
-            self.assertEqual(result.id, "gaid")
-            self.assertEqual(result.md5checksum, "def")
+    def testPageSizeAlmostListLength(self):
+        self.verifyPageSize(self.numReferences - 1)
 
-            # verify requests.get called correctly
-            url = "http://example.com/reference/anId"
-            params = {}
-            httpMethod = 'GET'
-            headers = {}
-            data = None
-            mockGet.assert_called_once_with(
-                httpMethod, url, params=params, data=data, headers=headers)
+    def testPageSizeListLength(self):
+        self.verifyPageSize(self.numReferences)
 
-    def testRunListRequest(self):
-        # setup
-        mockGet = mock.Mock()
-        with mock.patch('requests.request', mockGet):
-            text = {
-                "offset": 123,
-                "sequence": "sequence",
-                "nextPageToken": "pageTok",
-            }
-            mockGet.side_effect = [
-                DummyResponse(json.dumps(text)), DummyResponse('{}')]
-            protocolRequest = protocol.GAListReferenceBasesRequest()
-            protocolRequest.start = 1
-            protocolRequest.end = 5
-            url = "references/{id}/bases"
-            protocolResponseClass = protocol.GAListReferenceBasesResponse
-            id_ = 'myId'
 
-            # invoke SUT
-            result = [base for base in self.httpClient.runListRequest(
-                protocolRequest, url, protocolResponseClass, id_)]
+class TestPagingLocal(PagingMixin, unittest.TestCase):
+    """
+    Tests paging using the local client.
+    """
 
-            # verify results of invocation
-            self.assertEqual(len(result), 2)
-            self.assertEqual(result[0].offset, 123)
-            self.assertEqual(result[0].sequence, "sequence")
+    def getClient(self):
+        return client.LocalClient(self.backend)
 
-            # verify requests.get called correctly
-            url = "http://example.com/references/myId/bases"
-            params = {"start": 1, "end": 5}
-            httpMethod = 'GET'
-            mockGet.assert_called_twice_with(httpMethod, url, params=params)
+
+class TestPagingHttp(PagingMixin, unittest.TestCase):
+    """
+    Tests paging using the HTTP client.
+    """
+
+    def getClient(self):
+        return DummyHttpClient(self.backend)

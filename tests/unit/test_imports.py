@@ -6,6 +6,7 @@ from __future__ import print_function
 from __future__ import unicode_literals
 
 import copy
+import fnmatch
 import itertools
 import logging
 import operator
@@ -20,20 +21,7 @@ from snakefood.find import ERROR_IMPORT, ERROR_SYMBOL, ERROR_UNUSED
 from snakefood.fallback.collections import defaultdict
 from snakefood.roots import find_roots, relfile
 
-import tests.utils as utils
-
-
-graph = None
-
-
-def globalSetUp():
-    # the import graph should only be generated once;
-    # subsequent tests can reuse it
-    global graph
-    if graph is None:
-        snakefoodScanner = SnakefoodScanner()
-        graph = snakefoodScanner.scan()
-    return graph
+import tests.paths as paths
 
 
 class TestImports(unittest.TestCase):
@@ -42,8 +30,10 @@ class TestImports(unittest.TestCase):
     - doesn't contain any cycles
     - doesn't violate layering constraints
     """
-    def setUp(self):
-        self.graph = globalSetUp()
+    @classmethod
+    def setUpClass(cls):
+        snakefoodScanner = SnakefoodScanner()
+        cls.graph = snakefoodScanner.scan()
 
     def testNoCycles(self):
         checker = ImportGraphCycleChecker(self.graph)
@@ -157,20 +147,61 @@ class ImportGraphLayerChecker(object):
     but as it stands the time for these tests is dominated by file
     operations and and parsing the ASTs
     """
+    excludedPythonFilenames = set(['__init__.py', '_version.py'])
 
     # each file/module is in one and only one moduleGroup
     moduleGroupNames = {
-        'cli': ['ga4gh/cli.py'],
-        'client': ['ga4gh/client.py'],
-        'frontend': ['ga4gh/frontend.py'],
-        'backend': ['ga4gh/backend.py'],
-        'exceptions': ['ga4gh/exceptions.py'],
-        'datamodel': ['ga4gh/datamodel/reads.py',
-                      'ga4gh/datamodel/references.py',
-                      'ga4gh/datamodel/variants.py'],
-        'libraries': ['ga4gh/converters.py'],
-        'protocol': ['ga4gh/protocol.py', 'ga4gh/_protocol_definitions.py'],
-        'config': ['ga4gh/serverconfig.py'],
+        'cli': [
+            'ga4gh/server/cli/client.py',
+            'ga4gh/server/cli/common.py',
+            'ga4gh/server/cli/configtest.py',
+            'ga4gh/server/cli/repomanager.py',
+            'ga4gh/server/cli/server.py',
+        ],
+        'client': [
+            'ga4gh/server/client.py',
+        ],
+        'frontend': [
+            'ga4gh/server/frontend.py',
+            'ga4gh/server/repo_manager.py',
+        ],
+        'backend': [
+            'ga4gh/server/backend.py',
+            'ga4gh/server/datarepo.py',
+            'ga4gh/server/paging.py',
+            'ga4gh/server/response_builder.py',
+        ],
+        'exceptions': [
+            'ga4gh/server/exceptions.py',
+        ],
+        'datamodel': [
+            'ga4gh/server/datamodel/bio_metadata.py',
+            'ga4gh/server/datamodel/reads.py',
+            'ga4gh/server/datamodel/references.py',
+            'ga4gh/server/datamodel/rna_quantification.py',
+            'ga4gh/server/datamodel/variants.py',
+            'ga4gh/server/datamodel/datasets.py',
+            'ga4gh/server/datamodel/ontologies.py',
+            'ga4gh/server/datamodel/obo_parser.py',
+            'ga4gh/server/datamodel/sequence_annotations.py',
+            'ga4gh/server/datamodel/continuous.py',
+            'ga4gh/server/datamodel/genotype_phenotype.py',
+            'ga4gh/server/datamodel/genotype_phenotype_featureset.py',
+            'ga4gh/server/datamodel/peers.py',
+            'ga4gh/server/gff3.py',
+            'ga4gh/server/sqlite_backend.py',
+        ],
+        'libraries': [
+            'ga4gh/server/converters.py',
+            'ga4gh/server/configtest.py',
+        ],
+        'config': [
+            'ga4gh/server/serverconfig.py',
+        ],
+        'repo': [
+            'ga4gh/server/repo/rnaseq2ga.py',
+            'ga4gh/server/repo/models.py',
+        ],
     }
 
     # each moduleGroupName has one and only one entry here
@@ -179,10 +210,11 @@ class ImportGraphLayerChecker(object):
         ['client'],
         ['frontend'],
         ['backend'],
-        ['datamodel', 'libraries'],
+        ['libraries'],
+        ['datamodel'],
+        ['repo'],
         ['exceptions'],
         ['config'],
-        ['protocol'],
     ]
 
     def __init__(self, graph):
@@ -213,6 +245,23 @@ class ImportGraphLayerChecker(object):
         return modules
 
     def _checkConfiguration(self):
+        # each module that exists in the file tree appears in moduleGroupNames
+        pythonFiles = []
+        for root, dirnames, filenames in os.walk(paths.getGa4ghFilePath()):
+            for filename in fnmatch.filter(filenames, '*.py'):
+                pythonFilename = os.path.relpath(
+                    os.path.join(root, filename))
+                if (pythonFilename not in self.excludedPythonFilenames and
+                        filename not in self.excludedPythonFilenames):
+                    pythonFiles.append(pythonFilename)
+        modules = self._allModules()
+        moduleSet = set(modules)
+        for pythonFile in pythonFiles:
+            if pythonFile not in moduleSet:
+                message = "file {} is not listed in moduleGroupNames".format(
+                    pythonFile)
+                raise ConfigurationException(message)
+
         # each module should only appear once in moduleGroupNames
         modules = self._allModules()
         moduleSet = set(modules)
@@ -301,7 +350,6 @@ class ImportGraphCycleChecker(object):
     # essentially, an entry here removes an edge from the dependency
     # graph as far as cycle detection is concerned
     cycleExclusions = [
-        ['ga4gh/_protocol_definitions.py', 'ga4gh/protocol.py']
     ]
 
     def __init__(self, graph):
@@ -395,7 +443,7 @@ class SnakefoodScanner(object):
         self.optsIgnores = ['.svn', 'CVS', 'build', '.hg', '.git']
         self.optsPrintRoots = None
         self.optsFollow = True
-        self.args = [utils.packageName]
+        self.args = [paths.packageName]
 
     def scan(self):
         """

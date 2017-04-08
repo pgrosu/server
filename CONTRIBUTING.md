@@ -3,10 +3,11 @@
 Thank you for taking the time to contribute. We appreciate it!
 
 There are two ways to contribute to this effort. The first way is to use this 
-project's [Issues Page](https://github.com/ga4gh/server/issues), which we 
-use as a forum to discuss both major and minor issues related to developing 
-the GA4GH reference implementation. See the [Issue Resolution](#issue_resolution) 
-section below for specifics on how issues are resolved by the community.
+project's [Issues Page](https://github.com/ga4gh/ga4gh-server/issues),
+which we use as a forum to discuss both major and minor issues related to
+developing the GA4GH reference implementation. See the [Issue
+Resolution](#issue_resolution) section below for specifics on how issues are
+resolved by the community.
 
 A second way to contribute to the project is to directly contribute 
 development effort. Please refer to the next section, 
@@ -26,6 +27,7 @@ Some general rules to follow:
 * Create a branch for each update that you're working on. These branches 
   are often called "feature" or "topic" branches. Any changes that you 
   push to your feature branch will automatically be shown in the pull request.
+* Test your code (by running `nosetests`) before creating a pull request.
 * Keep your pull requests as small as possible. Large pull requests are 
   hard to review. Try to break up your changes into self-contained and 
   incremental pull requests.

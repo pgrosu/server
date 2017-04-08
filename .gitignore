@@ -2,9 +2,20 @@
 *.swp
 *.swo
 ga4gh-example-data*
+ga4gh-downloaded-data*
+ga4gh-compliance-data*
 scripts/auth.yml
+*.fa
+*.pid
+*.fai
+*.gzi
+*.bak
+*.db-shm
+*.db-wal
+_version.py
+tests/data/registry.db
 
-# Below taken from https://gist.github.com/octocat/9257657
+# Below based off of https://gist.github.com/octocat/9257657
 # and https://github.com/github/gitignore/blob/master/Python.gitignore
 
 # Compiled source #
@@ -28,6 +39,7 @@ scripts/auth.yml
 *.rar
 *.tar
 *.zip
+*.whl
  
 # Logs and databases #
 ######################
@@ -60,6 +72,7 @@ develop-eggs/
 dist/
 downloads/
 eggs/
+.eggs/
 lib/
 lib64/
 parts/
@@ -68,6 +81,8 @@ var/
 *.egg-info/
 .installed.cfg
 *.egg
+ga4gh-env/
+
 
 # PyInstaller
 #  Usually these files are written by a python script from a template
@@ -102,3 +117,11 @@ target/
 
 # Pycharm
 .idea/
+*.iml
+
+# Unused parts of the OIDC provider
+oidc-provider/simple_op/src/provider/server/static/jwks.json
+
+# Eclipse PyDev files
+.project
+.pydevproject
